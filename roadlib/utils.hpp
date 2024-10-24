@@ -148,18 +148,19 @@ inline int ell2xyz(const double* Ell, double* XYZ, bool degrees)
 
 // XYZ to Ellipsoidal coordinates
 // ----------
+// 将笛卡尔 XYZ 坐标转换为椭球坐标（经纬度和高度），并使用迭代方法精确求解。
 inline int xyz2ell(const double* XYZ, double* Ell, bool degrees)
 {
-	const double bell = Aell * (1.0 - 1.0 / Finv);
-	const double e2 = (Aell * Aell - bell * bell) / (Aell * Aell);
-	const double e2c = (Aell * Aell - bell * bell) / (bell * bell);
+	const double bell = Aell * (1.0 - 1.0 / Finv); //计算椭球的极半径（极轴上的半径）。
+	const double e2 = (Aell * Aell - bell * bell) / (Aell * Aell); //计算椭球的第一偏心率的平方，用于后续计算。
+	const double e2c = (Aell * Aell - bell * bell) / (bell * bell); //计算椭球的第二偏心率的平方，也用于后续计算。
 
 	double nn, ss, zps, hOld, phiOld, theta, sin3, cos3;
-
+	//ss: 计算在 X-Y 平面的径向距离，即从地球中心投影到 X-Y 平面上的距离。
 	ss = sqrt(XYZ[0] * XYZ[0] + XYZ[1] * XYZ[1]);
 
 	if (double_eq(ss, 0.0)) { Ell[0] = -999; Ell[1] = -999; Ell[2] = -999; return 1; }
-
+	// zps: Z 轴高度和径向距离之比，用于后续计算。
 	zps = XYZ[2] / ss;
 	theta = atan((XYZ[2] * Aell) / (ss * bell));
 	sin3 = sin(theta) * sin(theta) * sin(theta);
@@ -225,15 +226,24 @@ inline int xyz2neu(const double* XYZ, const double* XYZ_Ref, double* neu)
 	return 1;
 }
 
+//  calcRne 通过计算从地球坐标系（ECEF）到东北天坐标系（NED）的旋转矩阵，实现了坐标系的转换。
 inline Eigen::Matrix3d calcRne(Eigen::Vector3d xyz)
 {
 	double XYZ_Ref[3] = { xyz(0),xyz(1),xyz(2) };
 	double ell[3];
+	// xyz2ell 函数将ECEF坐标转换为大地坐标。具体来说，它将 XYZ_Ref 转换为 ell，其中 ell[0] 是纬度，ell[1] 是经度，ell[2] 是高度。
 	xyz2ell(XYZ_Ref, ell, false);
 	double sinPhi = sin(ell[0]);
 	double cosPhi = cos(ell[0]);
 	double sinLam = sin(ell[1]);
 	double cosLam = cos(ell[1]);
+
+	/*
+	Rne 的每一行表示NED坐标系的一个轴在ECEF坐标系中的表示：
+	第一行：NED坐标系的东轴在ECEF坐标系中的表示。
+	第二行：NED坐标系的北轴在ECEF坐标系中的表示。
+	第三行：NED坐标系的天轴在ECEF坐标系中的表示。
+	*/
 	Eigen::Matrix3d Rne;
 	Rne << -sinLam, cosLam, 0,
 		-sinPhi * cosLam, -sinPhi * sinLam, cosPhi,
@@ -245,27 +255,31 @@ inline Eigen::Matrix3d calcRne(Eigen::Vector3d xyz)
 struct Tpoint
 {
 public:
+	/*这是一个宏，用于确保在使用Eigen库时，动态分配的内存是对齐的。Eigen库对内存对齐有严格的要求，
+	以提高性能和避免潜在的错误。这个宏会重载 new 操作符，使其分配对齐的内存。*/
 	EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 public:
-	Eigen::Matrix3d R;
-	Eigen::Vector3d t;
-	Eigen::Vector3d v;
+	Eigen::Matrix3d R; // 旋转矩阵 R 用于描述点的方向或姿态。它是一个3x3的矩阵，通常用于表示三维空间中的旋转。（由四元素得到）
+	Eigen::Vector3d t; //平移向量 t 用于描述点的位置。它是一个3维向量，通常用于表示三维空间中的位置。
+	Eigen::Vector3d v; // 速度向量 v 用于描述点的速度。它是一个3维向量，通常用于表示三维空间中的速度。（该项目暂时没有填充，因为gt.txt里面只有时间戳、位置、四元素）
 	bool valid;
 };
 
+// Trajectory用于表示一个轨迹，包含了轨迹的参考点和一系列的姿态点
 struct Trajectory
 {
 public:
 	EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 public:
-	Eigen::Vector3d ref;
-	map<double, Tpoint> poses;
+	Eigen::Vector3d ref; //参考点
+	map<double, Tpoint> poses; //姿态点映射，其中double一般是时间戳，Tpoint是姿态点
+	// transfrom_ref函数用于将轨迹中的所有姿态点从一个参考坐标系转换到另一个参考坐标系
 	void transfrom_ref(Eigen::Vector3d _ref)
 	{
 		if(ref == _ref) return;
-		Eigen::Matrix3d Rne = calcRne(ref);
-		Eigen::Matrix3d Rn1e = calcRne(_ref);
-		Eigen::Matrix3d Rn1n = Rn1e*Rne.transpose();
+		Eigen::Matrix3d Rne = calcRne(ref);            //Rne 是从当前参考坐标系 ref 到地球坐标系的旋转矩阵。
+		Eigen::Matrix3d Rn1e = calcRne(_ref);         //Rn1e 是从新的参考坐标系 _ref 到地球坐标系的旋转矩阵。
+		Eigen::Matrix3d Rn1n = Rn1e*Rne.transpose();  //Rn1n 是从当前参考坐标系 ref 到新的参考坐标系 _ref 的旋转矩阵。
 		for(auto iter = poses.begin();iter!=poses.end();iter++)
 		{
 			iter->second.R = Rn1n * iter->second.R;
